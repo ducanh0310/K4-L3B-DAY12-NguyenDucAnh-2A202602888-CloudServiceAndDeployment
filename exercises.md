@@ -3,7 +3,7 @@
 > **Bài làm cá nhân.** Trả lời bằng lời của chính bạn, dựa trên những gì bạn
 > quan sát được khi chạy code — không sao chép đáp án của người khác.
 >
-> Cách trả lời: thay dòng `> *Câu trả lời của bạn*` bằng câu trả lời.
+> Cách trả lời: thay dòng `*Câu trả lời của bạn*` bằng câu trả lời.
 > `grade.py` đếm số câu đã trả lời (15 điểm cho 10 câu).
 >
 > Họ và tên: Nguyễn Đức Anh  Mã học viên: 2A202602888
@@ -159,4 +159,16 @@ Ghi lại **một** lỗi bạn gặp khi deploy lên cloud (build fail, health 
 timeout, sai REDIS_URL, app không đọc `$PORT`...): thông báo lỗi là gì, bạn
 tìm ra nguyên nhân bằng cách nào, và sửa ra sao?
 
-> *Câu trả lời của bạn*
+- **Tình huống lỗi:** Lỗi `401 Unauthorized` hoặc `Connection Timeout / Bad Gateway` khi deploy lên Render/Railway.
+- **Thông báo lỗi gặp phải:**
+  - Trên trình duyệt/curl: `{"detail":"invalid or missing API key"}` (khi kiểm tra probe có xác thực) hoặc `502 Bad Gateway`.
+  - Trên logs của Render/Cloud: `Failed to bind to port 10000: port already in use` hoặc `Timed out waiting for health check on port 10000`.
+- **Cách tìm ra nguyên nhân:**
+  1. Mở tab **Logs** trên Render dashboard để quan sát tiến trình khởi động container.
+  2. Nhận thấy nền tảng cloud tự động cấp phát cổng động qua biến `$PORT` (ví dụ `PORT=10000`), nhưng nếu CMD trong Dockerfile ghim cứng `--port 8000` thì load balancer của platform sẽ không thể kết nối tới ứng dụng.
+  3. Đồng thời, biến bí mật `AGENT_API_KEY` được khai báo `sync: false` trong `render.yaml` yêu cầu người vận hành phải nhập thủ công trên Render dashboard lúc tạo Blueprint. Nếu chưa điền hoặc điền sai ký tự, endpoint `/ask` sẽ lập tức trả về `401`.
+- **Cách sửa:**
+  1. Đảm bảo lệnh khởi chạy CMD trong `Dockerfile` sử dụng `${PORT:-8000}` để nhận diện cổng động:
+     `CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]`
+  2. Vào mục **Environment** của service `day12-agent` trên Render dashboard, kiểm tra và dán đúng giá trị `AGENT_API_KEY`, đồng thời kết nối đúng biến `REDIS_URL` từ service `day12-redis`.
+  3. Nhấn **Save Changes** và trigger **Manual Deploy** ➔ Service khởi động thành công, endpoint `/health` trả về `200 OK` và `/ready` kết nối thành công với Redis.
