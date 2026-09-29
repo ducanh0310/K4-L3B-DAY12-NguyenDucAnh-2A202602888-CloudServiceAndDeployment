@@ -126,7 +126,12 @@ nhưng cost guard phải chặn, và một tình huống ngược lại.
 Nếu gộp hai endpoint làm một và cho nó kiểm tra Redis, chuyện gì xảy ra với cụm
 3 container khi Redis mất kết nối 30 giây? Trả lời theo đúng thứ tự sự kiện.
 
-> *Câu trả lời của bạn*
+Thứ tự sự kiện xảy ra:
+1. **Redis mất kết nối trong 30 giây** (do sự cố mạng, restart hoặc quá tải).
+2. **Liveness check thất bại**: Orchestrator (Docker/Kubernetes) gửi request định kỳ (mỗi 5-10s) tới endpoint chung. Vì endpoint này kiểm tra Redis và Redis không phản hồi, nó trả về mã lỗi 503 hoặc timeout.
+3. **Orchestrator restart toàn bộ container**: Sau vài lần thử lại thất bại liên tiếp (`retries`), orchestrator lầm tưởng rằng tiến trình bên trong cả 3 container agent đều "đã chết" (unhealthy) và ra lệnh **kill rồi restart lại toàn bộ 3 container**.
+4. **Xảy ra Restart Storm (CrashLoopBackOff)**: Trong 30 giây Redis chưa hồi phục, cả 3 container sau khi vừa khởi động lại tiếp tục bị liveness probe đánh rớt ➔ lại bị restart liên tục theo vòng lặp. Mọi request của người dùng đang được xử lý dở dang đều bị ngắt quãng giữa chừng (người dùng gặp lỗi 502 Bad Gateway), đồng thời CPU/RAM của server bị tiêu tốn lãng phí vào việc liên tục khởi động lại ứng dụng.
+5. **Ý nghĩa của việc tách rời `/health` và `/ready`**: Khi tách riêng, nếu Redis mất kết nối, `/ready` sẽ trả về 503 để Load Balancer tạm thời ngừng điều hướng traffic vào container (chờ Redis hồi phục), nhưng `/health` vẫn trả về 200 để báo rằng bản thân container agent vẫn đang sống khỏe mạnh, tuyệt đối không bị orchestrator restart oan.
 
 ---
 
@@ -136,7 +141,15 @@ Chạy `docker compose up --scale agent=3` rồi gọi `/ask` nhiều lần vớ
 `X-User-Id`. Quan sát `history_length` trong response. Nếu lịch sử được lưu
 trong một dict Python thay vì Redis, bạn sẽ thấy con số đó thay đổi thế nào?
 
-> *Câu trả lời của bạn*
+- Khi lưu trong Redis (Stateless service):
+  Mọi instance agent đều đọc và ghi dữ liệu lịch sử vào một database Redis dùng chung bên ngoài process. Do đó, `history_length` sẽ tăng đều đặn, liên tục và nhất quán sau mỗi lượt hỏi: 0 ➔ 2 ➔ 4 ➔ 6 ➔ 8... bất kể request rơi vào instance nào trong 3 container.
+- Nếu lưu trong một dict Python (RAM của từng instance):
+  Vì Load Balancer phân phối các request luân phiên (Round-Robin) tới 3 container độc lập (Container 1, 2, 3), mỗi container chỉ có một vùng nhớ RAM riêng biệt:
+  - Request 1 đến Container 1: `history_length = 0` (Container 1 lưu câu hỏi 1 vào RAM của nó).
+  - Request 2 đến Container 2: `history_length = 0` (vì RAM của Container 2 hoàn toàn trống rỗng, chưa từng trò chuyện với user này).
+  - Request 3 đến Container 3: `history_length = 0` (Container 3 cũng không hề biết gì về các câu hỏi trước).
+  - Request 4 lại rơi vào Container 1: `history_length = 2` (Container 1 nhớ câu hỏi 1).
+  ➔ Con số `history_length` sẽ nhảy lộn xộn, agent bị "mất trí nhớ" và không thể duy trì được mạch hội thoại thống nhất với người dùng. Cấu trúc Stateless tách toàn bộ state ra Redis là điều kiện bắt buộc để có thể scale ngang (horizontal scaling).
 
 ---
 
