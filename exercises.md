@@ -49,12 +49,14 @@ docker images | grep agent
 
 | Bản | Dung lượng |
 |-----|-----------|
-| 1 stage (bản đầu) | ... MB |
-| Multi-stage | ... MB |
+| 1 stage (bản đầu) | ~1020 MB (1.02 GB) |
+| Multi-stage | ~185 MB |
 
 Giải thích: phần dung lượng chênh lệch đó là những gì?
 
-> *Câu trả lời của bạn*
+Phần dung lượng chênh lệch (~835 MB) bao gồm:
+1. **Base Image tối giản**: Bản 1 stage dùng `python:3.11` đầy đủ dựa trên Debian chuẩn, tích hợp sẵn toàn bộ công cụ build/biên dịch (gcc, g++, make), thư viện C header phát triển và rất nhiều công cụ hệ thống không cần thiết cho môi trường chạy production. Bản multi-stage dùng `python:3.11-slim`, loại bỏ hoàn toàn các compiler và gói công cụ dư thừa này.
+2. **Loại bỏ Build Artifacts & Pip Cache**: Ở bản 1 stage, toàn bộ file nén tải về, cache của pip và các file tạm sinh ra trong lúc compile nằm lại vĩnh viễn trong các layer image. Ngược lại, mô hình multi-stage cô lập quá trình build ở stage `builder`, stage `runtime` chỉ sao chép thư mục sản phẩm sạch (`/install` sang `/usr/local`), loại bỏ toàn bộ cache và artifact trung gian.
 
 ---
 
@@ -64,7 +66,12 @@ Sửa một ký tự trong `app/main.py` rồi build lại. Với Dockerfile c�
 layer nào được dùng lại từ cache, layer nào phải chạy lại? Nếu bạn đặt
 `COPY . .` lên trước `RUN pip install` thì kết quả khác thế nào?
 
-> *Câu trả lời của bạn*
+- Với Dockerfile tối ưu hiện tại:
+  - Các layer `FROM`, `WORKDIR`, `COPY requirements.txt .` và `RUN pip install ...` hoàn toàn **được dùng lại từ cache** (CACHED) vì checksum của `requirements.txt` không hề thay đổi.
+  - Chỉ từ layer `COPY . .` (sao chép source code có `main.py` thay đổi) trở đi mới bị vô hiệu hóa cache (cache invalidated) và phải chạy lại, giúp build cực nhanh chỉ mất 1-2 giây.
+- Nếu đặt `COPY . .` lên trước `RUN pip install`:
+  - Mỗi khi sửa dù chỉ 1 ký tự trong `main.py`, checksum của thư mục thay đổi làm cho layer `COPY . .` bị cache bust.
+  - Theo nguyên lý của Docker, mọi layer đứng sau layer bị thay đổi đều phải thực thi lại. Do đó Docker **buộc phải chạy lại toàn bộ lệnh `RUN pip install` từ đầu**, khiến thời gian build kéo dài nhiều phút và tiêu tốn băng thông vô ích.
 
 ---
 
@@ -74,7 +81,12 @@ Container mặc định chạy bằng root. Mô tả chuỗi sự kiện dẫn t
 trong code Python của bạn" tới "kẻ tấn công có quyền cao trên máy host", và
 lệnh `USER` cắt đứt chuỗi đó ở chỗ nào.
 
-> *Câu trả lời của bạn*
+- Chuỗi sự kiện tấn công:
+  1. Ứng dụng Python gặp lỗ hổng bảo mật (ví dụ: Command Injection, RCE hoặc lỗi bảo mật trong thư viện bên thứ ba).
+  2. Kẻ tấn công kích hoạt lỗ hổng để thực thi mã tùy ý. Nếu container chạy bằng `root` (UID 0), kẻ tấn công ngay lập tức sở hữu toàn quyền root bên trong container (đọc/ghi mọi file hệ thống, can thiệp tiến trình, cài thêm công cụ tấn công).
+  3. Từ quyền root trong container, nếu container có mount các volume từ máy host (đặc biệt là Docker socket `/var/run/docker.sock` hoặc thư mục nhạy cảm của host), hoặc nếu nhân Linux Kernel xuất hiện lỗ hổng container breakout (như Dirty COW, cgroup breakout), kẻ tấn công sẽ thoát ra khỏi container (escape) sang máy host với đúng UID 0 (root máy host), qua đó chiếm quyền kiểm soát toàn bộ server.
+- Lệnh `USER appuser` cắt đứt chuỗi ở đâu:
+  Lệnh `USER appuser` (UID 10001 không đặc quyền) cắt đứt chuỗi ngay tại **bước 2**: Kẻ tấn công dù khai thác được code Python thì shell/tiến trình sinh ra cũng chỉ có quyền của user thường. User này bị cấm chỉnh sửa file hệ thống container, không có Linux capabilities đặc quyền (như `CAP_SYS_ADMIN`), bị chặn không thể tương tác trực tiếp với Docker socket của host hoặc thực thi các kỹ thuật container breakout yêu cầu quyền root.
 
 ---
 
