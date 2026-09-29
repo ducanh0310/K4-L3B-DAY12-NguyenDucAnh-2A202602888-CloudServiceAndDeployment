@@ -16,7 +16,9 @@ Trong `Settings`, `agent_api_key` không có giá trị mặc định nên app c
 khi khởi động nếu thiếu biến môi trường. Hãy mô tả một tình huống cụ thể mà
 việc "chết sớm" này cứu bạn, so với việc để mặc định `"changeme"`.
 
-> *Câu trả lời của bạn*
+Tình huống: Khi deploy service lên môi trường cloud (Railway, Render hoặc K8s), người vận hành quên cấu hình biến môi trường `AGENT_API_KEY` trong dashboard. 
+- Nếu có giá trị mặc định là `"changeme"`: Service vẫn khởi động bình thường. Kẻ xấu có thể thử các từ khóa mặc định phổ biến như `"changeme"` để gọi API trái phép, làm rò rỉ dữ liệu hoặc bào mòn tài nguyên/chi phí token LLM. Ta chỉ phát hiện ra khi đã mất tiền hoặc lộ lọt thông tin.
+- Khi không có giá trị mặc định (Fail Fast): App lập tức văng `ValidationError` và crash ngay lúc khởi động (container báo unhealthy). Hệ thống deployment lập tức báo lỗi đỏ, bắt buộc dev/ops phải cung cấp secret hợp lệ trước khi cho phép đón nhận traffic công khai, ngăn chặn hoàn toàn rủi ro bảo mật từ đầu.
 
 ---
 
@@ -26,7 +28,12 @@ Chạy service và gọi `/ask` vài lần. Dán một dòng log JSON bạn thu 
 nêu **hai** việc bạn làm được với dòng log đó mà `print("đã trả lời xong")`
 không làm được.
 
-> *Câu trả lời của bạn*
+Log JSON mẫu:
+`{"event": "ask_completed", "level": "info", "timestamp": "2026-09-29T03:07:11.123456+00:00", "user_id": "user_123", "tokens_in": 15, "tokens_out": 42, "cost_usd": 0.00057}`
+
+Hai việc làm được với dòng log JSON có cấu trúc mà `print("đã trả lời xong")` không làm được:
+1. **Truy vấn, tổng hợp và cảnh báo tự động bằng công cụ quản lý log (Datadog, Loki, CloudWatch, Elasticsearch):** Do log có định dạng JSON gồm các trường có kiểu dữ liệu rõ ràng (`cost_usd`, `tokens_in`, `tokens_out`, `user_id`), hệ thống có thể tự động parse dữ liệu để vẽ biểu đồ chi phí thời gian thực, tính tổng ngân sách tiêu thụ theo từng user, hoặc kích hoạt alert khi một request tốn vượt mức chi phí mà không cần dùng regex phân tích văn bản thô.
+2. **Lọc và truy vết theo ngữ cảnh (Structured Filtering & Auditing):** Nhờ có `level: "info"`, `timestamp` chuẩn ISO-8601 UTC và `user_id`, ta có thể dễ dàng lọc log theo khung thời gian chính xác, lọc riêng biệt mức độ log (DEBUG/INFO/ERROR) và trace toàn bộ chuỗi hành vi của một user cụ thể khi cần điều tra sự cố. Trong khi đó, `print("đã trả lời xong")` là văn bản phi cấu trúc, thiếu timestamp, thiếu context và không thể phân loại theo level.
 
 ---
 
