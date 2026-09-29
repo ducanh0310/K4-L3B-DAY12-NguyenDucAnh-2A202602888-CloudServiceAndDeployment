@@ -97,7 +97,12 @@ phút đồng hồ (reset lúc giây 00), một người dùng có thể gửi t
 request trong 2 giây liên tiếp khi hạn mức là 10/phút? Giải thích cách đạt được
 con số đó.
 
-> *Câu trả lời của bạn*
+- Con số tối đa: **20 request** trong 2 giây liên tiếp.
+- Giải thích cách đạt được:
+  Với cơ chế đếm theo phút đồng hồ (fixed window reset tại giây 00):
+  1. Người dùng gửi 10 request dồn vào giây `10:00:59` (giây cuối cùng của phút thứ 10). Lúc này, bộ đếm của phút 10 là 10 request, hoàn toàn hợp lệ (chưa vượt hạn mức 10/phút).
+  2. Ngay 1 giây sau đó, đồng hồ chuyển sang `10:01:00` (bắt đầu phút thứ 11). Bộ đếm fixed window tự động reset về 0. Người dùng lập tức gửi tiếp 10 request nữa trong giây `10:01:00` (hoặc `10:01:01`). Lúc này bộ đếm của phút 11 ghi nhận 10 request, vẫn hoàn toàn hợp lệ theo luật.
+  3. Kết quả là trong khoảng thời gian chỉ 2 giây liên tiếp (từ `10:00:59` đến `10:01:00`), hệ thống đã phải gánh chịu tới 20 request (gấp đôi hạn mức quy định). Đây là lỗ hổng "burst traffic tại biên" của fixed window. Thuật toán Sliding Window 60 giây (dùng Redis ZSET) giải quyết triệt để lỗi này bằng cách luôn tính chính xác tổng số request trong đúng 60 giây gần nhất tính từ thời điểm gọi.
 
 ---
 
@@ -106,7 +111,13 @@ con số đó.
 Hai cơ chế này khác nhau ở điểm nào? Cho một tình huống mà rate limit cho qua
 nhưng cost guard phải chặn, và một tình huống ngược lại.
 
-> *Câu trả lời của bạn*
+- Điểm khác nhau cốt lõi:
+  - **Rate Limit**: Giới hạn **tần suất / số lượng request trong một khoảng thời gian ngắn** (ví dụ: tối đa 10 request / 60 giây) nhằm bảo vệ hạ tầng máy chủ khỏi tình trạng quá tải CPU/RAM, nghẽn mạng hoặc tấn công từ chối dịch vụ (DoS/DDoS). Cơ chế này không quan tâm kích thước nội dung hay chi phí của request.
+  - **Cost Guard**: Giới hạn **tổng chi phí tài chính tiêu thụ trong một chu kỳ dài** (ví dụ: tối đa 10.0 USD / tháng) nhằm bảo vệ ví tiền của bạn khỏi hóa đơn API LLM tăng vọt. Cơ chế này tính toán theo lượng token tiêu thụ và số tiền phát sinh, không quan tâm request gửi nhanh hay chậm.
+- Tình huống Rate Limit cho qua nhưng Cost Guard chặn:
+  - Một người dùng cả tháng mới gửi 1 request duy nhất (tần suất cực thấp: 1 request/phút -> Rate Limit hoàn toàn cho qua). Tuy nhiên, người này trước đó đã tiêu hết 10.0 USD ngân sách của tháng, hoặc request hiện tại có câu hỏi quá dài khiến ước tính chi phí vượt quá ngân sách còn lại. Khi đó Cost Guard sẽ chặn ngay lập tức và trả về mã lỗi `402 Payment Required`.
+- Tình huống Cost Guard cho qua nhưng Rate Limit chặn:
+  - Một người dùng mới toanh vào đầu tháng, ngân sách còn nguyên 10.0 USD (chưa tiêu đồng nào). Người dùng này chạy script gửi tới tấp 15 câu hỏi ngắn chỉ trong vòng 3 giây. Về mặt chi phí, 15 câu hỏi này chỉ tốn vài cent (rất nhỏ so với 10 USD), nhưng vì gửi quá nhanh vượt quá 10 req/phút, Rate Limit sẽ chặn từ request thứ 11 trở đi và trả về mã lỗi `429 Too Many Requests` để bảo vệ server.
 
 ---
 
